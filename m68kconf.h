@@ -32,6 +32,7 @@
 #ifndef M68KCONF__HEADER
 #define M68KCONF__HEADER
 
+#include <limits.h>
 
 /* Configuration switches.
  * Use OPT_SPECIFY_HANDLER for configuration options that allow callbacks.
@@ -43,6 +44,7 @@
 #define OPT_ON              1
 #define OPT_SPECIFY_HANDLER 2
 
+#define M68K_USE_SOFTFLOAT        OPT_ON
 
 /* ======================================================================== */
 /* ============================== MAME STUFF ============================== */
@@ -70,6 +72,11 @@
 #define M68K_EMULATE_030            OPT_ON
 #define M68K_EMULATE_040            OPT_ON
 
+#if ( M68K_EMULATE_008 || M68K_EMULATE_010 || M68K_EMULATE_EC020 || M68K_EMULATE_020 || M68K_EMULATE_040 )
+ #define M68K_EMULATE_FPU OPT_ON
+#else
+ #define M68K_EMULATE_FPU OPT_OFF
+#endif
 
 /* If ON, the CPU will call m68k_read_immediate_xx() for immediate addressing
  * and m68k_read_pcrelative_xx() for PC-relative addressing.
@@ -83,6 +90,12 @@
  * word to [address+2], and then write the low word to [address].
  */
 #define M68K_SIMULATE_PD_WRITES     OPT_OFF
+
+/* If ON, m68k_register_memory() can be used to register an array of memory
+ * regions directly accessible from Musashi without having to call
+ * intermediate read/write functions.
+ */
+#define M68K_REGISTER_MEMORY        OPT_OFF
 
 /* If ON, CPU will call the interrupt acknowledge callback when it services an
  * interrupt.

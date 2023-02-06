@@ -48,8 +48,10 @@ extern void m68ki_build_opcode_table(void);
 #include "m68kops.h"
 #include "m68kcpu.h"
 
+#if M68K_EMULATE_FPU
 #include "m68kfpu.c"
 #include "m68kmmu.h" // uses some functions from m68kfpu.c which are static !
+#endif
 
 /* ======================================================================== */
 /* ================================= DATA ================================= */
@@ -85,14 +87,13 @@ m68ki_cpu_core m68ki_cpu = {0};
 sigjmp_buf m68ki_aerr_trap;
 #else
 jmp_buf m68ki_aerr_trap;
+jmp_buf m68ki_bus_error_jmp_buf;
 #endif
 #endif /* M68K_EMULATE_ADDRESS_ERROR */
 
 uint    m68ki_aerr_address;
 uint    m68ki_aerr_write_mode;
 uint    m68ki_aerr_fc;
-
-jmp_buf m68ki_bus_error_jmp_buf;
 
 /* Used by shift & rotate instructions */
 const uint8 m68ki_shift_8_table[65] =
@@ -771,6 +772,14 @@ void m68k_set_fc_callback(void  (*callback)(unsigned int new_fc))
 	CALLBACK_SET_FC = callback ? callback : default_set_fc_callback;
 }
 
+#ifdef M68K_REGISTER_MEMORY
+void m68k_register_memory(m68k_mem_t memory[], unsigned int len)
+{
+	m68ki_cpu.mem = (void *)memory;
+	m68ki_cpu.mem_len = len;
+}
+#endif
+
 void m68k_set_instr_hook_callback(void  (*callback)(unsigned int pc))
 {
 	CALLBACK_INSTR_HOOK = callback ? callback : default_instr_hook_callback;
@@ -967,7 +976,9 @@ int m68k_execute(int num_cycles)
 		/* Return point if we had an address error */
 		m68ki_set_address_error_trap(); /* auto-disable (see m68kcpu.h) */
 
+#if M68K_EMULATE_ADDRESS_ERROR
 		m68ki_check_bus_error_trap();
+#endif
 
 		/* Main loop.  Keep going until we run out of clock cycles */
 		do
@@ -1098,7 +1109,9 @@ void m68k_init(void)
 /* Trigger a Bus Error exception */
 void m68k_pulse_bus_error(void)
 {
+#if M68K_EMULATE_ADDRESS_ERROR
 	m68ki_exception_bus_error();
+#endif
 }
 
 /* Pulse the RESET line on the CPU */

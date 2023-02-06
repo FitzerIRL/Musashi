@@ -37,11 +37,15 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 #include "m68k.h"
 
 #include <limits.h>
 
+#if M68K_EMULATE_ADDRESS_ERROR
 #include <setjmp.h>
+#endif
 
 /* ======================================================================== */
 /* ==================== ARCHITECTURE-DEPENDANT DEFINES ==================== */
@@ -65,6 +69,12 @@ extern "C" {
 #undef uint64
 #undef sint
 #undef uint
+
+// Hacky
+typedef int8_t   int8;
+typedef int16_t  int16;
+typedef int32_t  int32;
+
 
 typedef signed   char  sint8;  		/* ASG: changed from char to signed char */
 typedef signed   short sint16;
@@ -95,9 +105,10 @@ typedef uint32 uint64;
 #define S64(val) val
 #endif
 
+#if M68K_USE_SOFTFLOAT
 #include "softfloat/milieu.h"
 #include "softfloat/softfloat.h"
-
+#endif
 
 /* Allow for architectures that don't have 8-bit sizes */
 #if UCHAR_MAX == 0xff
@@ -938,10 +949,13 @@ typedef struct
 	uint cacr;         /* Cache Control Register (m68020, unemulated) */
 	uint caar;         /* Cache Address Register (m68020, unemulated) */
 	uint ir;           /* Instruction Register */
+#if M68K_EMULATE_FPU
 	floatx80 fpr[8];     /* FPU Data Register (m68030/040) */
 	uint fpiar;        /* FPU Instruction Address Register (m68040) */
 	uint fpsr;         /* FPU Status Register (m68040) */
 	uint fpcr;         /* FPU Control Register (m68040) */
+#endif
+
 	uint t1_flag;      /* Trace 1 */
 	uint t0_flag;      /* Trace 0 */
 	uint s_flag;       /* Supervisor */
@@ -975,6 +989,12 @@ typedef struct
 	uint cyc_movem_l;
 	uint cyc_shift;
 	uint cyc_reset;
+
+#if M68K_REGISTER_MEMORY
+	/* Memory regions if defined */
+	m68k_mem_t (*mem)[];
+	unsigned int mem_len;
+#endif
 
 	/* Virtual IRQ lines state */
 	uint virq_state;
@@ -1035,7 +1055,9 @@ char* m68ki_disassemble_quick(unsigned int pc, unsigned int cpu_type);
 
 /* ---------------------------- Read Immediate ---------------------------- */
 
+#if M68K_EMULATE_PMMU
 extern uint pmmu_translate_addr(uint addr_in);
+#endif
 
 /* Handles all immediate reads, does address error check, function code setting,
  * and prefetching if they are enabled in m68kconf.h
@@ -1118,6 +1140,124 @@ static inline uint m68ki_read_imm_32(void)
 }
 
 /* ------------------------- Top level read/write ------------------------- */
+
+#if M68K_REGISTER_MEMORY
+
+#define INLINE inline
+
+INLINE m68k_mem_t *m68ki_locate_memory(uint address)
+{
+	unsigned int i;
+
+	if (m68ki_cpu.mem == NULL)
+		return NULL;
+	for (i = 0; (i != m68ki_cpu.mem_len); ++i) {
+		m68k_mem_t *mem = &(*m68ki_cpu.mem)[i];
+
+		if (((address ^ mem->swab) >= mem->addr) &&
+		    ((address ^ mem->swab) < (mem->addr + mem->size)))
+			return mem;
+	}
+	return NULL;
+}
+
+#define m68ki_read_memory_8_direct(a)					\
+	do {								\
+		m68k_mem_t *mem = m68ki_locate_memory(a);		\
+									\
+		if (mem != NULL)					\
+			return ((uint8 *)mem->mem)			\
+				[((((a) - mem->addr) ^ mem->swab) &	\
+				  mem->mask)];				\
+	}								\
+	while (0)
+
+#define m68ki_read_memory_16_direct(a)					\
+	do {								\
+		m68k_mem_t *mem = m68ki_locate_memory(a);		\
+									\
+		if (mem != NULL) {					\
+			uint8 *m = &((uint8 *)mem->mem)			\
+				[(((a) - mem->addr) & mem->mask)];	\
+									\
+			return ((m[mem->swab] << 8) |			\
+				m[(mem->swab ^ 1)]);			\
+		}							\
+	}								\
+	while (0)
+
+#define m68ki_read_memory_32_direct(a)					\
+	do {								\
+		m68k_mem_t *mem = m68ki_locate_memory(a);		\
+									\
+		if (mem != NULL) {					\
+			uint8 *m = &((uint8 *)mem->mem)			\
+				[(((a) - mem->addr) & mem->mask)];	\
+									\
+			return ((m[mem->swab] << 24) |			\
+				(m[(mem->swab ^ 1)] << 16) |		\
+				(m[(mem->swab + 2)] << 8) |		\
+				m[((mem->swab + 2) ^ 1)]);		\
+		}							\
+	}								\
+	while (0)
+
+#define m68ki_write_memory_8_direct(a, v)				\
+	do {								\
+		m68k_mem_t *mem = m68ki_locate_memory(a);		\
+									\
+		if ((mem != NULL) && (mem->w)) {			\
+			((uint8 *)mem->mem)				\
+				[((((a) - mem->addr) ^ mem->swab) &	\
+				  mem->mask)] = (v);			\
+			return;						\
+		}							\
+	}								\
+	while (0);
+
+#define m68ki_write_memory_16_direct(a, v)				\
+	do {								\
+		m68k_mem_t *mem = m68ki_locate_memory(a);		\
+									\
+		if ((mem != NULL) && (mem->w)) {			\
+			uint8 *m = &((uint8 *)mem->mem)			\
+				[(((a) - mem->addr) & mem->mask)];	\
+									\
+			m[mem->swab] = ((v) >> 8);			\
+			m[(mem->swab ^ 1)] = (v);			\
+			return;						\
+		}							\
+	}								\
+	while (0);
+
+#define m68ki_write_memory_32_direct(a, v)				\
+	do {								\
+		m68k_mem_t *mem = m68ki_locate_memory(a);		\
+									\
+		if ((mem != NULL) && (mem->w)) {			\
+			uint8 *m = &((uint8 *)mem->mem)			\
+				[(((a) - mem->addr) & mem->mask)];	\
+									\
+			m[mem->swab] = ((v) >> 24);			\
+			m[(mem->swab ^ 1)] = ((v) >> 16);		\
+			m[(mem->swab + 2)] = ((v) >> 8);		\
+			m[((mem->swab + 2) ^ 1)] = (v);			\
+			return;						\
+		}							\
+	}								\
+	while (0);
+
+#else /* M68K_REGISTER_MEMORY */
+
+#define m68ki_read_memory_8_direct(a) (void)0
+#define m68ki_read_memory_16_direct(a) (void)0
+#define m68ki_read_memory_32_direct(a) (void)0
+
+#define m68ki_write_memory_8_direct(a, v) (void)0
+#define m68ki_write_memory_16_direct(a, v) (void)0
+#define m68ki_write_memory_32_direct(a, v) (void)0
+
+#endif /* M68K_REGISTER_MEMORY */
 
 /* Handles all memory accesses (except for immediate reads if they are
  * configured to use separate functions in m68kconf.h).
@@ -1907,6 +2047,8 @@ static inline void m68ki_exception_privilege_violation(void)
 	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_PRIVILEGE_VIOLATION] - CYC_INSTRUCTION[REG_IR]);
 }
 
+#if M68K_EMULATE_ADDRESS_ERROR
+
 extern jmp_buf m68ki_bus_error_jmp_buf;
 
 #define m68ki_check_bus_error_trap() setjmp(m68ki_bus_error_jmp_buf)
@@ -1946,6 +2088,7 @@ static inline void m68ki_exception_bus_error(void)
 
 	longjmp(m68ki_bus_error_jmp_buf, 1);
 }
+#endif // M68K_EMULATE_ADDRESS_ERROR
 
 extern int cpu_log_enabled;
 
